@@ -6,26 +6,50 @@
 # Change 1..1 below to 1..last_test_to_print .
 # (It may become useful if the test is moved to ./t subdirectory.)
 
-BEGIN { $| = 1; print "1..2\n"; }
-END {print "not ok 1\n" unless $loaded;}
+BEGIN { $| = 1; print "1..3\n"; }
+END {print "package load...  not ok 1\n" unless $loaded;}
 use Image::IPTCInfo;
 $loaded = 1;
-print "ok 1\n";
+print "package load....  ok 1\n";
 
 ######################### End of black magic.
 
-# Insert your test code below (better if it prints "ok 13"
-# (correspondingly "not ok 13") depending on the success of chunk 13
-# of the test code):
+#
+# Test loading IPTC info
+#
 
 my $info = new Image::IPTCInfo('demo_images/burger_van.jpg');
 
-if ($info->Attribute('caption/abstract') eq
+if (defined($info) && $info->Attribute('caption/abstract') eq
 	'A van full of burgers awaits mysterious buyers in a dark parking lot.')
 {
-	print "ok 2\n";
+	print "get caption....   ok 2\n";
 }
 else
 {
-	print "not ok 2\n";
+	print "get caption....   not ok 2\n";
+	print "error: " . Image::IPTCInfo::Error() . "\n";
 }
+
+#
+# Test saving IPTC info
+#
+
+$info->SetAttribute('caption/abstract', 'modified caption');
+$info->SaveAs('demo_images/burger_van_save1.jpg') ||
+	print "error: " . Image::IPTCInfo::Error() . "\n";
+
+undef $info;
+
+$info = new Image::IPTCInfo('demo_images/burger_van_save1.jpg');
+
+if (defined($info) && $info->Attribute('caption/abstract') eq 'modified caption')
+{
+	print "save and load.... ok 3\n";
+}
+else
+{
+	print "save and load.... not ok 3\n";
+	print "error: " . Image::IPTCInfo::Error() . "\n";
+}
+
