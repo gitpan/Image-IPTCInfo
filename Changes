@@ -21,5 +21,10 @@ Revision history for Image::IPTCInfo.
 	 - Now works fine with warnings turned on.
      - Fixed up HexDump a little and added other debugging tools.
 
-To Do:
-	 - Add credits list
+1.7  Oct 03, 2003 by Josh Carter
+     - Fix for odd-length Adobe part at end of Adobe block (thanks to
+	   Ed Rossi for sending me files with this problem).
+	 - Added option to SaveAs() which lets you discard the other stuff
+	   in the Adobe block, which is useful if you have an image with a
+	   corrupted block (e.g. from IPTCInfo version 1.5).
+	 - Fixed stupid bug in Log().

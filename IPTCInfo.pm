@@ -8,7 +8,7 @@
 package Image::IPTCInfo;
 
 use vars qw($VERSION);
-$VERSION = '1.6';
+$VERSION = '1.7';
 
 #
 # Global vars
@@ -192,7 +192,7 @@ sub Save
 #
 sub SaveAs
 {
-	my ($self, $newfile) = @_;
+	my ($self, $newfile, $options) = @_;
 
 	#
 	# Open file and snarf data from it.
@@ -223,6 +223,11 @@ sub SaveAs
 	}
 
 	my ($start, $end, $adobe) = @$ret;
+
+	if (defined($options) && defined($options->{'discardAdobeParts'}))
+	{
+		undef $adobe;
+	}
 
 	#
 	# Open dest file and stuff data there
@@ -979,7 +984,7 @@ sub CollectAdobeParts
 									 $stringlen % 2 != 0);
 			$out .= pack("N", $size);
 			$out .= $var;
-			$out .= pack("C", 0) if ($size % 2 != 0);
+			$out .= pack("C", 0) if ($size % 2 != 0 && length($out) % 2 != 0);
 		}
 	}
 
@@ -1102,7 +1107,7 @@ sub PhotoshopIIMBlock
 sub Log
 {
 	if ($debugMode)
-	{ print STDERR "**IPTC** $message\n"; }
+	{ my $message = shift; print STDERR "**IPTC** $message\n"; }
 } 
 
 #
