@@ -1,5 +1,5 @@
 # IPTCInfo: extractor for IPTC metadata embedded in images
-# Copyright (C) 2000 Josh Carter <josh@spies.com>
+# Copyright (C) 2000-2004 Josh Carter <josh@multipart-mixed.com>
 # All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
@@ -8,7 +8,7 @@
 package Image::IPTCInfo;
 
 use vars qw($VERSION);
-$VERSION = '1.7';
+$VERSION = '1.8';
 
 #
 # Global vars
@@ -180,9 +180,9 @@ sub create
 #
 sub Save
 {
-	my ($self) = @_;
+	my ($self, $options) = @_;
 
-	return $self->SaveAs($self->{'_filename'});
+	return $self->SaveAs($self->{'_filename'}, $options);
 }
 
 #
@@ -212,7 +212,7 @@ sub SaveAs
 		return undef;
 	}
 
-	my $ret = JPEGCollectFileParts();
+	my $ret = JPEGCollectFileParts($options);
 
 	close(FILE);
 
@@ -545,7 +545,7 @@ sub FileIsJPEG
 	read (FILE, $ff, 1) || goto notjpeg;
 	read (FILE, $soi, 1);
 	
-	goto notjpeg unless (ord($ff) == 0xff & ord($soi) == 0xd8);
+	goto notjpeg unless (ord($ff) == 0xff && ord($soi) == 0xd8);
 
 	# now check for APP0 marker. I'll assume that anything with a SOI
 	# followed by APP0 is "close enough" for our purposes. (We're not
@@ -582,7 +582,7 @@ sub JPEGScan
 	read (FILE, $ff, 1) || return 0;
 	read (FILE, $soi, 1);
 	
-	unless (ord($ff) == 0xff & ord($soi) == 0xd8)
+	unless (ord($ff) == 0xff && ord($soi) == 0xd8)
 	{
 		$error = "JPEGScan: invalid start of file"; Log($error);
 		return 0;
@@ -736,8 +736,7 @@ sub BlindScan
 			read (FILE, $record, 1);
 			read (FILE, $dataset, 1);
 			
-			if (ord($record) == 2 && (ord($dataset) == 0 ||
-									  ord($dataset) == 0x19))
+			if (ord($record) == 2)
 			{
 				# found it. seek to start of this tag and return.
 				Log("BlindScan: found IIM start at offset $offset");
@@ -824,7 +823,12 @@ sub CollectIIMInfo
 #
 sub JPEGCollectFileParts
 {
+	my ($options) = @_;
 	my ($start, $end, $adobeParts);
+	my $discardAppParts = 0;
+
+	if (defined($options) && defined($options->{'discardAppParts'}))
+	{ $discardAppParts = 1; }
 
 	# Start at beginning of file
 	seek(FILE, 0, 0);
@@ -834,7 +838,7 @@ sub JPEGCollectFileParts
 	read (FILE, $ff, 1) || return 0;
 	read (FILE, $soi, 1);
 	
-	unless (ord($ff) == 0xff & ord($soi) == 0xd8)
+	unless (ord($ff) == 0xff && ord($soi) == 0xd8)
 	{
 		$error = "JPEGScan: invalid start of file"; Log($error);
 		return 0;
@@ -845,28 +849,20 @@ sub JPEGCollectFileParts
 	#
 	$start .= pack("CC", 0xff, 0xd8);
 
-	#
-	# Scan first APP0 section. This part *must* go in first in JFIF
-	# files, so we handle it specially. I'm not going to insist that
-	# it's APP0, however, since EXIF files appear to put APP1 first.
-	# (Not sure why that is.) In any case, the first marker after the
-	# SOI will be the first marker in our output.
-	#
-	my $marker = JPEGNextMarker();
-
-	my $app0data;
-	if (JPEGSkipVariable(\$app0data) == 0)
-	{ $error = "JPEGSkipVariable failed";
-	  Log($error); return 0; }
-	
-	# Append it to the file start
-	$start .= pack("CC", 0xff, ord($marker));
-	# remember that the length must include itself (2 bytes)
-	$start .= pack("n", length($app0data) + 2);
-	$start .= $app0data;
+	# Manually insert APP0 if we're trashing application parts, since
+	# all JFIF format images should start with the version block.
+	if ($discardAppParts)
+	{
+		$start .= pack("CC", 0xff, 0xe0);
+		$start .= pack("n", 16);    # length (including these 2 bytes)
+		$start .= "JFIF";           # format
+		$start .= pack("CC", 1, 2); # call it version 1.2 (current JFIF)
+		$start .= pack(C8, 0);      # zero everything else
+	}
 
 	#
-	# Now scan through rest of file
+	# Now scan through all markers in file until we hit image data or
+	# IPTC stuff.
 	#
 	$marker = JPEGNextMarker();
 
@@ -898,9 +894,14 @@ sub JPEGCollectFileParts
 
 		# Take all parts aside from APP13, which we'll replace
 		# ourselves.
-		if (ord($marker) == 0xed)
+		if ($discardAppParts && ord($marker) >= 0xe0 && ord($marker) <= 0xef)
 		{
-			# But we do need the adobe stuff from part 13
+			# Skip all application markers, including Adobe parts
+			undef $adobeParts;
+		}
+		elsif (ord($marker) == 0xed)
+		{
+			# Collect the adobe stuff from part 13
 			$adobeParts = CollectAdobeParts($partdata);
 			goto doneScanning;
 		}
@@ -1162,7 +1163,7 @@ sub JPEGDebugScan
 	read (FILE, $ff, 1) || return 0;
 	read (FILE, $soi, 1);
 	
-	unless (ord($ff) == 0xff & ord($soi) == 0xd8)
+	unless (ord($ff) == 0xff && ord($soi) == 0xd8)
 	{
 		Log("JPEGScan: invalid start of file");
 		goto done;
@@ -1305,9 +1306,24 @@ then call:
 
 This will save the file with the updated IPTC info. Please only run
 this on *copies* of your images -- not your precious originals! --
-until I know for a fact that the saving code is bulletproof. I know it
-works on my machine, but I want to ensure that field reports are good
-before I really trust it.
+because I'm not liable for any corruption of your images. (If you read
+software license agreements, nobody else is liable, either. Make
+backups of your originals!)
+
+If you're into image wizardry, there are a couple handy options you
+can use on saving. One feature is to trash the Adobe block of data,
+which contains IPTC info, color settings, Photoshop print settings,
+and stuff like that. The other is to trash all application blocks,
+including stuff like EXIF and FlashPix data. This can be handy for
+reducing file sizes. The options are passed as a hashref to Save() and
+SaveAs(), e.g.:
+
+  $info->Save({'discardAdobeParts' => 'on'});
+  $info->SaveAs('new-file-name.jpg', {'discardAppParts' => 'on'});
+
+Note that if there was IPTC info in the image, or you added some
+yourself, the new image will have an Adobe part with only the IPTC
+information.
 
 =head2 XML AND SQL EXPORT FEATURES
 
