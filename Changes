@@ -1,5 +1,25 @@
 Revision history for Image::IPTCInfo.
 
 1.1  May 23, 2001 by Josh Carter
-     - Properly packaged the module with makefile and such
+     - Properly packaged the module with makefile and such.
      - Fixed stupid byte-ordering bug on Intel architectures.
+
+1.5  May 28, 2001 by Josh Carter
+	 - Major update with "real" JFIF parsing and can also
+	 create/modify/save IPTC info in JFIF files.
+	 - Lots of other features I didn't document at the time and can't
+	 remember now.
+
+1.6  Mar 10, 2002 by Josh Carter
+	 - Now handles all flavors of JPEG for saving, not just JFIF.
+	 (Most nobably it now supports EXIF.)
+	 - Fix in CollectAdobeParts() that was corrupting files during
+	 SaveAs() if they had an Adobe Resource Block. Sorry!
+	 - Some proggies would save files starting the IIM section with
+	 0x1c0219 instead of the usual 0x1c0200, so I allow that now.
+	 - Fixed a couple stupid bugs in ExportXML.
+	 - Now works fine with warnings turned on.
+     - Fixed up HexDump a little and added other debugging tools.
+
+To Do:
+	 - Add credits list

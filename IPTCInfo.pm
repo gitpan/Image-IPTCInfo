@@ -1,5 +1,3 @@
-#!/usr/bin/perl
-
 # IPTCInfo: extractor for IPTC metadata embedded in images
 # Copyright (C) 2000 Josh Carter <josh@spies.com>
 # All rights reserved.
@@ -10,7 +8,7 @@
 package Image::IPTCInfo;
 
 use vars qw($VERSION);
-$VERSION = '1.5';
+$VERSION = '1.6';
 
 #
 # Global vars
@@ -139,7 +137,7 @@ sub new
 	binmode(FILE);
 
 	my $datafound = ScanToFirstIMMTag();
-	unless ($datafound || length($force))
+	unless ($datafound || defined($force))
 	{
 		$error = "No IPTC data found."; Log($error);
 		close(FILE);
@@ -207,14 +205,14 @@ sub SaveAs
 
 	binmode(FILE);
 
-	unless (FileIsJFIF())
+	unless (FileIsJPEG())
 	{
-		$error = "Source file is not a JFIF; I can only save JFIFs. Sorry.";
+		$error = "Source file is not a JPEG; I can only save JPEGs. Sorry.";
 		Log($error);
 		return undef;
 	}
 
-	my $ret = JFIFCollectFileParts();
+	my $ret = JPEGCollectFileParts();
 
 	close(FILE);
 
@@ -304,7 +302,7 @@ sub Keywords
 sub ClearKeywords
 {
 	my $self = shift;
-	$self->{_listdata}->{'keywords'} = [];
+	$self->{_listdata}->{'keywords'} = undef;
 }
 
 sub AddKeyword
@@ -328,7 +326,7 @@ sub SupplementalCategories
 sub ClearSupplementalCategories
 {
 	my $self = shift;
-	$self->{_listdata}->{'supplemental category'} = [];
+	$self->{_listdata}->{'supplemental category'} = undef;
 }
 
 sub AddSupplementalCategories
@@ -398,7 +396,7 @@ sub ExportXML
 		
 		$out .= "\t<$cleankey>" . $self->{_data}->{$key} . "</$cleankey>\n";
 	}
-	
+
 	if (defined ($self->Keywords()))
 	{
 		# print keywords
@@ -419,7 +417,7 @@ sub ExportXML
 		
 		foreach my $category (@{$self->SupplementalCategories()})
 		{
-			$out .= "\t\t<supplemental_cagegory>$category</supplemental_category>\n";
+			$out .= "\t\t<supplemental_category>$category</supplemental_category>\n";
 		}
 		
 		$out .= "\t</supplemental_categories>\n";
@@ -505,64 +503,74 @@ sub ExportSQL
 #
 sub ScanToFirstIMMTag
 {
-	if (FileIsJFIF())
+	if (FileIsJPEG())
 	{
-		Log("File is JFIF, proceeding with JFIFScan");
-		return JFIFScan();
+		Log("File is JPEG, proceeding with JPEGScan");
+		return JPEGScan();
 	}
 	else
 	{
-		Log("File not a JFIF, trying BlindScan");
+		Log("File not a JPEG, trying BlindScan");
 		return BlindScan();
 	}
 }
 
 #
-# FileIsJFIF
+# FileIsJPEG
 #
 # Checks to see if this file is a JPEG/JFIF or not. Will reset the
 # file position back to 0 after it's done in either case.
 #
-sub FileIsJFIF
+sub FileIsJPEG
 {
 	# reset to beginning just in case
 	seek(FILE, 0, 0);
 
+	if ($debugMode)
+	{
+		Log("Opening 16 bytes of file:\n");
+		my $dump;
+		read (FILE, $dump, 16);
+		HexDump($dump);
+		seek(FILE, 0, 0);
+	}
+
 	# check start of file marker
 	my ($ff, $soi);
-	read (FILE, $ff, 1) || goto notjfif;
+	read (FILE, $ff, 1) || goto notjpeg;
 	read (FILE, $soi, 1);
 	
-	goto notjfif unless (ord($ff) == 0xff & ord($soi) == 0xd8);
+	goto notjpeg unless (ord($ff) == 0xff & ord($soi) == 0xd8);
 
-	# now check for JFIF format identifier
-	my ($app0, $len, $jfif);
+	# now check for APP0 marker. I'll assume that anything with a SOI
+	# followed by APP0 is "close enough" for our purposes. (We're not
+	# dinking with image data, so anything following the JPEG tagging
+	# system should work.)
+	my ($app0, $len, $jpeg);
 	read (FILE, $ff, 1);
 	read (FILE, $app0, 1);
-	read (FILE, $len, 2);
-	read (FILE, $jfif, 4);
-	
-	goto notjfif unless ($jfif eq "JFIF");
+
+	goto notjpeg unless (ord($ff) == 0xff);
 
 	# reset to beginning of file
 	seek(FILE, 0, 0);
 	return 1;
 
-  notjfif:
+  notjpeg:
 	seek(FILE, 0, 0);
 	return 0;
 }
 
 #
-# JFIFScan
+# JPEGScan
 #
-# Assuming the file is a JFIF (see above), this will scan through the
+# Assuming the file is a JPEG (see above), this will scan through the
 # markers looking for the APP13 marker, where IPTC/IIM data should be
 # found. While this isn't a formally defined standard, all programs
 # have (supposedly) adopted Adobe's technique of putting the data in
 # APP13.
 #
-sub JFIFScan
+sub JPEGScan
 {
 	# Skip past start of file marker
 	my ($ff, $soi);
@@ -571,13 +579,13 @@ sub JFIFScan
 	
 	unless (ord($ff) == 0xff & ord($soi) == 0xd8)
 	{
-		$error = "JFIFScan: invalid start of file"; Log($error);
+		$error = "JPEGScan: invalid start of file"; Log($error);
 		return 0;
 	}
 
 	# Scan for the APP13 marker which will contain our IPTC info (I hope).
 
-	my $marker = JFIFNextMarker();
+	my $marker = JPEGNextMarker();
 
 	while (ord($marker) != 0xed)
 	{
@@ -592,11 +600,11 @@ sub JFIFScan
 		{ $error = "Marker scan hit start of image data";
 		  Log($error); return 0; }
 
-		if (JFIFSkipVariable() == 0)
-		{ $error = "JFIFSkipVariable failed";
+		if (JPEGSkipVariable() == 0)
+		{ $error = "JPEGSkipVariable failed";
 		  Log($error); return 0; }
 
-		$marker = JFIFNextMarker();
+		$marker = JPEGNextMarker();
 	}
 
 	# If were's here, we must have found the right marker. Now
@@ -605,12 +613,12 @@ sub JFIFScan
 }
 
 #
-# JFIFNextMarker
+# JPEGNextMarker
 #
 # Scans to the start of the next valid-looking marker. Return value is
 # the marker id.
 #
-sub JFIFNextMarker
+sub JPEGNextMarker
 {
 	my $byte;
 
@@ -618,7 +626,7 @@ sub JFIFNextMarker
 	read (FILE, $byte, 1) || return 0;
 	while (ord($byte) != 0xff)
 	{
-		Log("JFIFNextMarker: warning: bogus stuff in JFIF file");
+		Log("JPEGNextMarker: warning: bogus stuff in JPEG file");
 		read(FILE, $byte, 1) || return 0;
 	}
 
@@ -629,18 +637,18 @@ sub JFIFNextMarker
 	} while (ord($byte) == 0xff);
 
 	# $byte should now contain the marker id.
-	Log("JFIFNextMarker: at marker " . unpack("H*", $byte));
+	Log("JPEGNextMarker: at marker " . unpack("H*", $byte));
 	return $byte;
 }
 
 #
-# JFIFSkipVariable
+# JPEGSkipVariable
 #
-# Skips variable-length section of JFIF block. Should always be called
-# between calls to JFIFNextMarker to ensure JFIFNextMarker is at the
+# Skips variable-length section of JPEG block. Should always be called
+# between calls to JPEGNextMarker to ensure JPEGNextMarker is at the
 # start of data it can properly parse.
 #
-sub JFIFSkipVariable
+sub JPEGSkipVariable
 {
 	my $rSave = shift;
 
@@ -650,23 +658,39 @@ sub JFIFSkipVariable
 		
 	($length) = unpack("n", $length);
 
-	Log("JFIF variable length: $length");
+	Log("JPEG variable length: $length");
 
 	# Length includes itself, so must be at least 2
 	if ($length < 2)
 	{
-		Log("JFIFSkipVariable: Erroneous JPEG marker length");
+		Log("JPEGSkipVariable: Erroneous JPEG marker length");
 		return 0;
 	}
 	$length -= 2;
 	
 	# Skip remaining bytes
-	$temp;
-	unless (read(FILE, $temp, $length))
+	my $temp;
+	if (defined($rSave) || $debugMode)
 	{
-		Log("JFIFSkipVariable: read failed while skipping var data");
-		return 0;
+		unless (read(FILE, $temp, $length))
+		{
+			Log("JPEGSkipVariable: read failed while skipping var data");
+			return 0;
+		}
+
+		# prints out a heck of a lot of stuff
+		# HexDump($temp);
 	}
+	else
+	{
+		# Just seek
+		unless(seek(FILE, $length, 1))
+		{
+			Log("JPEGSkipVariable: read failed while skipping var data");
+			return 0;
+		}
+	}
+
 	$$rSave = $temp if defined($rSave);
 
 	return 1;
@@ -703,11 +727,12 @@ sub BlindScan
 		{
 			# if we found that, look for record 2, dataset 0
 			# (record version number)
-			my $record, $dataset;
+			my ($record, $dataset);
 			read (FILE, $record, 1);
 			read (FILE, $dataset, 1);
 			
-			if (ord($record) == 2 && ord($dataset) == 0)
+			if (ord($record) == 2 && (ord($dataset) == 0 ||
+									  ord($dataset) == 0x19))
 			{
 				# found it. seek to start of this tag and return.
 				Log("BlindScan: found IIM start at offset $offset");
@@ -742,7 +767,7 @@ sub CollectIIMInfo
 	# NOTE: file should already be at the start of the first
 	# IPTC code: record 2, dataset 0.
 	
-	while (true)
+	while (1)
 	{
 		my $header;
 		return unless read(FILE, $header, 5);
@@ -785,14 +810,14 @@ sub CollectIIMInfo
 #######################################################################
 
 #
-# JFIFCollectFileParts
+# JPEGCollectFileParts
 #
 # Collects all pieces of the file except for the IPTC info that we'll
 # replace when saving. Returns the stuff before the info, stuff after,
 # and the contents of the Adobe Resource Block that the IPTC data goes
 # in. Returns undef if a file parsing error occured.
 #
-sub JFIFCollectFileParts
+sub JPEGCollectFileParts
 {
 	my ($start, $end, $adobeParts);
 
@@ -806,7 +831,7 @@ sub JFIFCollectFileParts
 	
 	unless (ord($ff) == 0xff & ord($soi) == 0xd8)
 	{
-		$error = "JFIFScan: invalid start of file"; Log($error);
+		$error = "JPEGScan: invalid start of file"; Log($error);
 		return 0;
 	}
 
@@ -816,21 +841,21 @@ sub JFIFCollectFileParts
 	$start .= pack("CC", 0xff, 0xd8);
 
 	#
-	# Scan first APP0 section. This part *must* go in first, so we
-	# handle it specially.
+	# Scan first APP0 section. This part *must* go in first in JFIF
+	# files, so we handle it specially. I'm not going to insist that
+	# it's APP0, however, since EXIF files appear to put APP1 first.
+	# (Not sure why that is.) In any case, the first marker after the
+	# SOI will be the first marker in our output.
 	#
-	my $marker = JFIFNextMarker();
-	unless (ord($marker) == 0xe0)
-	{ $error = "JFIFCollectFileParts: APP0 marker not first"; 
-	  Log($error); return 0; }
+	my $marker = JPEGNextMarker();
 
 	my $app0data;
-	if (JFIFSkipVariable(\$app0data) == 0)
-	{ $error = "JFIFSkipVariable failed";
+	if (JPEGSkipVariable(\$app0data) == 0)
+	{ $error = "JPEGSkipVariable failed";
 	  Log($error); return 0; }
 	
 	# Append it to the file start
-	$start .= pack("CC", 0xff, 0xe0);
+	$start .= pack("CC", 0xff, ord($marker));
 	# remember that the length must include itself (2 bytes)
 	$start .= pack("n", length($app0data) + 2);
 	$start .= $app0data;
@@ -838,10 +863,9 @@ sub JFIFCollectFileParts
 	#
 	# Now scan through rest of file
 	#
-	$marker = JFIFNextMarker();
-	my $readRest = false;
+	$marker = JPEGNextMarker();
 
-	while (true)
+	while (1)
 	{
 		if (ord($marker) == 0)
 		{ $error = "Marker scan failed"; Log($error); return 0; }
@@ -849,24 +873,22 @@ sub JFIFCollectFileParts
 		# Check for end of image
 		if (ord($marker) == 0xd9)
 		{
-			Log("JFIFCollectFileParts: saw end of image marker");
+			Log("JPEGCollectFileParts: saw end of image marker");
 			$end .= pack("CC", 0xff, ord($marker));
-			$readRest = false;
 			goto doneScanning;
 		}
 
 		# Check for start of compressed data
 		if (ord($marker) == 0xda)
 		{
-			Log("JFIFCollectFileParts: saw start of compressed data");
+			Log("JPEGCollectFileParts: saw start of compressed data");
 			$end .= pack("CC", 0xff, ord($marker));
-			$readRest = true;
 			goto doneScanning;
 		}
 
 		my $partdata;
-		if (JFIFSkipVariable(\$partdata) == 0)
-		{ $error = "JFIFSkipVariable failed";
+		if (JPEGSkipVariable(\$partdata) == 0)
+		{ $error = "JPEGSkipVariable failed";
 		  Log($error); return 0; }
 
 		# Take all parts aside from APP13, which we'll replace
@@ -875,19 +897,17 @@ sub JFIFCollectFileParts
 		{
 			# But we do need the adobe stuff from part 13
 			$adobeParts = CollectAdobeParts($partdata);
-
-			$readRest = true;
 			goto doneScanning;
 		}
 		else
 		{
-			# Append all other parts to end section
-			$end .= pack("CC", 0xff, ord($marker));
-			$end .= pack("n", length($partdata) + 2);
-			$end .= $partdata;
+			# Append all other parts to start section
+			$start .= pack("CC", 0xff, ord($marker));
+			$start .= pack("n", length($partdata) + 2);
+			$start .= $partdata;
 		}
 
-		$marker = JFIFNextMarker();
+		$marker = JPEGNextMarker();
 	}
 
   doneScanning:
@@ -918,36 +938,40 @@ sub CollectAdobeParts
 {
 	my ($data) = @_;
 	my $length = length($data);
-	my ($out, $offset);
+	my $offset = 0;
+	my $out;
 
 	# Skip preamble
-	$offset += length("Photoshop 3.0 ");
-
-	# Get OSType and ID
-	my ($ostype, $id1, $id2) = unpack("NCC", substr($data, $offset, 6));
-	$offset += 6;
+	$offset = length('Photoshop 3.0 ');
 
 	# Process everything
 	while ($offset < $length)
 	{
+		# Get OSType and ID
+		my ($ostype, $id1, $id2) = unpack("NCC", substr($data, $offset, 6));
+		$offset += 6;
+
 		# Get pascal string
 		my ($stringlen) = unpack("C", substr($data, $offset, 1));
 		$offset += 1;
 		my $string = substr($data, $offset, $stringlen);
-		# round up if odd, always at least 1
-		$offset++ if (($stringlen + 1) % 2 != 0); 
+		$offset += $stringlen;
+		# round up if odd
+		$offset++ if ($stringlen % 2 != 0);
+		# there should be a null if string len is 0
+		$offset++ if ($stringlen == 0);
 
 		# Get variable-size data
 		my ($size) = unpack("N", substr($data, $offset, 4));
 		$offset += 4;
+
 		my $var = substr($data, $offset, $size);
 		$offset += $size;
 		$offset++ if ($size % 2 != 0); # round up if odd
 
-		# skip IIM data (0x0404)
+		# skip IIM data (0x0404), but write everything else out
 		unless ($id1 == 4 && $id2 == 4)
 		{
-			# Output
 			$out .= pack("NCC", $ostype, $id1, $id2);
 			$out .= pack("C", $stringlen);
 			$out .= $string;
@@ -957,10 +981,6 @@ sub CollectAdobeParts
 			$out .= $var;
 			$out .= pack("C", 0) if ($size % 2 != 0);
 		}
-
-		# Start over
-		($ostype, $id1, $id2) = unpack("NCC", substr($data, $offset, 6));
-		$offset += 6;
 	}
 
 	return $out;
@@ -1063,9 +1083,9 @@ sub PhotoshopIIMBlock
 	# Pad with a blank if not even size
 	$resourceBlock .= pack("C", 0) if (length($data) % 2 != 0);
 	# Finally tack on other data
-	$resourceBlock .= $otherparts;
+	$resourceBlock .= $otherparts if defined($otherparts);
 
-	$out .= pack("CC", 0xff, 0xed); # JFIF start of block, APP13
+	$out .= pack("CC", 0xff, 0xed); # JPEG start of block, APP13
 	$out .= pack("n", length($resourceBlock) + 2); # length
 	$out .= $resourceBlock;
 
@@ -1082,14 +1102,7 @@ sub PhotoshopIIMBlock
 sub Log
 {
 	if ($debugMode)
-	{
-		my $message = shift;
-		my $oldFh = select(STDERR);
-	
-		print "**IPTC** $message\n";
-		
-		select($oldFh);
-	}
+	{ print STDERR "**IPTC** $message\n"; }
 } 
 
 #
@@ -1101,27 +1114,75 @@ sub HexDump
 {
 	my $dump = shift;
 	my $len  = length($dump);
-	my $offset;
+	my $offset = 0;
+	my ($dcol1, $dcol2);
 
 	while ($offset < $len)
 	{
 		my $temp = substr($dump, $offset++, 1);
 
-		if ($offset % 16 == 0)
-		{
-			print $dcol1 . " | " . $dcol2 . "\n";
-			undef $dcol1; undef $dcol2;
-		}
 		my $hex = unpack("H*", $temp);
 		$dcol1 .= " " . $hex;
 		if (ord($temp) >= 0x21 && ord($temp) <= 0x7e)
 		{ $dcol2 .= " $temp"; }
 		else
 		{ $dcol2 .= " ."; }
+
+		if ($offset % 16 == 0)
+		{
+			print STDERR $dcol1 . " | " . $dcol2 . "\n";
+			undef $dcol1; undef $dcol2;
+		}
 	}
+
+	if (defined($dcol1) || defined($dcol2))
+	{
+		print STDERR $dcol1 . " | " . $dcol2 . "\n";
+		undef $dcol1; undef $dcol2;
+	}
+}
+
+#
+# JPEGDebugScan
+#
+# Also very helpful when debugging.
+#
+sub JPEGDebugScan
+{
+	my $filename = shift;
+	open(FILE, $filename) or die "Can't open $filename: $!";
+
+	# Skip past start of file marker
+	my ($ff, $soi);
+	read (FILE, $ff, 1) || return 0;
+	read (FILE, $soi, 1);
 	
-	print $dcol1 . " | " . $dcol2 . "\n";
-	undef $dcol1; undef $dcol2;
+	unless (ord($ff) == 0xff & ord($soi) == 0xd8)
+	{
+		Log("JPEGScan: invalid start of file");
+		goto done;
+	}
+
+	# scan to 0xDA (start of scan), dumping the markers we see between
+	# here and there.
+	my $marker = JPEGNextMarker();
+
+	while (ord($marker) != 0xda)
+	{
+		if (ord($marker) == 0)
+		{ Log("Marker scan failed"); goto done; }
+
+		if (ord($marker) == 0xd9)
+		{Log("Marker scan hit end of image marker"); goto done; }
+
+		if (JPEGSkipVariable() == 0)
+		{ Log("JPEGSkipVariable failed"); return 0; }
+
+		$marker = JPEGNextMarker();
+	}
+
+done:
+	close(FILE);
 }
 
 # sucessful package load
@@ -1213,7 +1274,7 @@ That brings us to the next topic....
 
 =head2 MODIFYING IPTC DATA
 
-You can modify IPTC data in JPEG/JFIF files and save the file back to
+You can modify IPTC data in JPEG files and save the file back to
 disk. Here are the commands for doing so:
 
   # Set a given attribute
