@@ -8,7 +8,7 @@
 package Image::IPTCInfo;
 
 use vars qw($VERSION);
-$VERSION = '1.8';
+$VERSION = '1.9';
 
 #
 # Global vars
@@ -68,7 +68,7 @@ my $error;
 	110	=> 'credit',
 	115	=> 'source',
 	116	=> 'copyright notice',
-	118	=> 'contact',
+#	118	=> 'contact',            # in listdatasets
 	120	=> 'caption/abstract',
 	122	=> 'writer/editor',
 #	125	=> 'rasterized caption', # unsupported (binary data)
@@ -103,6 +103,7 @@ my $error;
 %listdatasets = (
 	20	=> 'supplemental category',
 	25	=> 'keywords',
+	118	=> 'contact',
 	);
 
 # this will get filled in if we save data back to file
@@ -117,7 +118,7 @@ my $error;
 # 
 # $info = new IPTCInfo('image filename goes here')
 # 
-# Returns iPTCInfo object filled with metadata from the given image 
+# Returns IPTCInfo object filled with metadata from the given image 
 # file. File on disk will be closed, and changes made to the IPTCInfo
 # object will *not* be flushed back to disk.
 #
@@ -341,6 +342,31 @@ sub AddSupplementalCategories
 	$self->AddListData('supplemental category', $add);
 }
 
+#
+# Contacts/Clear/Add
+# 
+# Returns reference to a list of contactss/clears the contacts
+# list/adds a contact.
+#
+sub Contacts
+{
+	my $self = shift;
+	return $self->{_listdata}->{'contact'};
+}
+
+sub ClearContacts
+{
+	my $self = shift;
+	$self->{_listdata}->{'contact'} = undef;
+}
+
+sub AddContact
+{
+	my ($self, $add) = @_;
+	
+	$self->AddListData('contact', $add);
+}
+
 sub AddListData
 {
 	my ($self, $list, $add) = @_;
@@ -426,6 +452,19 @@ sub ExportXML
 		}
 		
 		$out .= "\t</supplemental_categories>\n";
+	}
+
+	if (defined ($self->Contacts()))
+	{
+		# print contacts
+		$out .= "\t<contacts>\n";
+		
+		foreach my $contact (@{$self->Contacts()})
+		{
+			$out .= "\t\t<contact>$contact</contact>\n";
+		}
+		
+		$out .= "\t</contacts>\n";
 	}
 
 	# close base tag
@@ -614,7 +653,7 @@ sub JPEGScan
 
 	# If were's here, we must have found the right marker. Now
 	# BlindScan through the data.
-	return BlindScan();
+	return BlindScan(JPEGGetVariableLength());
 }
 
 #
@@ -647,16 +686,15 @@ sub JPEGNextMarker
 }
 
 #
-# JPEGSkipVariable
+# JPEGGetVariableLength
 #
-# Skips variable-length section of JPEG block. Should always be called
-# between calls to JPEGNextMarker to ensure JPEGNextMarker is at the
-# start of data it can properly parse.
+# Gets length of current variable-length section. File position at
+# start must be on the marker itself, e.g. immediately after call to
+# JPEGNextMarker. File position is updated to just past the length
+# field.
 #
-sub JPEGSkipVariable
+sub JPEGGetVariableLength
 {
-	my $rSave = shift;
-
 	# Get the marker parameter length count
 	my $length;
 	read(FILE, $length, 2) || return 0;
@@ -668,11 +706,28 @@ sub JPEGSkipVariable
 	# Length includes itself, so must be at least 2
 	if ($length < 2)
 	{
-		Log("JPEGSkipVariable: Erroneous JPEG marker length");
+		Log("JPEGGetVariableLength: erroneous JPEG marker length");
 		return 0;
 	}
 	$length -= 2;
-	
+
+	return $length;
+}
+
+#
+# JPEGSkipVariable
+#
+# Skips variable-length section of JPEG block. Should always be called
+# between calls to JPEGNextMarker to ensure JPEGNextMarker is at the
+# start of data it can properly parse.
+#
+sub JPEGSkipVariable
+{
+	my $rSave = shift;
+
+	my $length = JPEGGetVariableLength();
+	return if ($length == 0);
+
 	# Skip remaining bytes
 	my $temp;
 	if (defined($rSave) || $debugMode)
@@ -712,11 +767,15 @@ sub JPEGSkipVariable
 #
 sub BlindScan
 {
-	my $offset = 0;
-	my $MAX    = 8192; # keep within first 8192 bytes 
-					   # NOTE: this may need to change
+	my $MAX = shift;
+
+	$MAX = 8192 unless defined($MAX); # keep within first 8192 bytes 
+                                      # NOTE: this may need to change
+
+	Log("BlindScan: starting scan, max length $MAX");
 	
 	# start digging
+	my $offset = 0;
 	while ($offset <= $MAX)
 	{
 		my $temp;
@@ -849,10 +908,27 @@ sub JPEGCollectFileParts
 	#
 	$start .= pack("CC", 0xff, 0xd8);
 
-	# Manually insert APP0 if we're trashing application parts, since
-	# all JFIF format images should start with the version block.
-	if ($discardAppParts)
+	# Get first marker in file. This will be APP0 for JFIF or APP1 for
+	# EXIF.
+	my $marker = JPEGNextMarker();
+
+	my $app0data;
+	if (JPEGSkipVariable(\$app0data) == 0)
+	{ $error = "JPEGSkipVariable failed";
+	  Log($error); return 0; }
+
+	if (ord($marker) == 0xe0 || !$discardAppParts)
 	{
+		# Always include APP0 marker at start if it's present.
+		$start .= pack("CC", 0xff, ord($marker));
+		# Remember that the length must include itself (2 bytes)
+		$start .= pack("n", length($app0data) + 2);
+		$start .= $app0data;
+	}
+	else
+	{
+		# Manually insert APP0 if we're trashing application parts, since
+		# all JFIF format images should start with the version block.
 		$start .= pack("CC", 0xff, 0xe0);
 		$start .= pack("n", 16);    # length (including these 2 bytes)
 		$start .= "JFIF";           # format
@@ -1210,9 +1286,10 @@ Image::IPTCInfo - Perl extension for extracting IPTC image meta-data
   # Check if file had IPTC data
   unless (defined($info)) { die Image::IPTCInfo::Error(); }
     
-  # Get list of keywords or supplemental categories...
+  # Get list of keywords, supplemental categories, or contacts
   my $keywordsRef = $info->Keywords();
   my $suppCatsRef = $info->SupplementalCategories();
+  my $contactsRef = $info->Contacts();
     
   # Get specific attributes...
   my $caption = $info->Attribute('caption/abstract');
@@ -1289,6 +1366,7 @@ disk. Here are the commands for doing so:
   # Clear the keywords or supp. categories list
   $info->ClearKeywords();
   $info->ClearSupplementalCategories();
+  $info->ClearContacts();
 
   # Add keywords or supp. categories
   $info->AddKeyword('frob');

@@ -1,6 +1,6 @@
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Image-IPTCInfo
-version:      1.8
+version:      1.9
 version_from: IPTCInfo.pm
 installdirs:  site
 requires:
