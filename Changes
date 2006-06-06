@@ -47,8 +47,24 @@ Revision history for Image::IPTCInfo.
        supplemental categories. (Thanks Edward and Dirk.)
      - Scanning of App data #13 (Photoshop block) is now limited to
        the block length, which should keep us both from scanning
-	   outside the block, and also not stopping short of scanning the
-	   full block. (Thanks Edward and Dirk.)
+       outside the block, and also not stopping short of scanning the
+       full block. (Thanks Edward and Dirk.)
      - Trashing application data blocks now preserves APP0 if it's
        there, since that includes the image resolution, and you need
-	   an APP0 block anyway.
+       an APP0 block anyway.
+
+1.91
+     - Added 'local caption' field, 121. (Thanks, Joe.)
+
+1.93
+     - Blindscan max can now be configured for large non-JPEG files
+       with code like:
+
+         use Image::IPTCInfo;
+         $Image::IPTCInfo::MAX_FILE_OFFSET = 8192 * 5;
+         my $info = Image::IPTCInfo->new("largefile.tif");
+         
+       (Thanks to Brian Carp.)
+     - Fix to CollectAdobeParts if the size of the data block is smaller
+       than what's expected for the block. (Thanks to Brian Carp.)
+       
