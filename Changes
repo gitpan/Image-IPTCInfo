@@ -67,4 +67,12 @@ Revision history for Image::IPTCInfo.
        (Thanks to Brian Carp.)
      - Fix to CollectAdobeParts if the size of the data block is smaller
        than what's expected for the block. (Thanks to Brian Carp.)
-       
+
+1.94
+     - Added support for passing in IO::File file handles in addition to 
+       file names. (Thanks to Marc Liyanage.)
+     - Changed all file accesses from the regular Perl open/read/seek/close
+       calls operating on the FILE handle to OO-style IO::File method calls
+       (Thanks to Marc Liyanage.)
+     - debugMode was accidentally left on in 1.93, turning off.
+       (Thanks to Dr. Michael Langner.)

@@ -1,7 +1,7 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Image-IPTCInfo
-version:      1.93
+version:      1.94
 version_from: IPTCInfo.pm
 installdirs:  site
 requires:

@@ -6,9 +6,10 @@
 # it under the same terms as Perl itself.
 
 package Image::IPTCInfo;
+use IO::File;
 
 use vars qw($VERSION);
-$VERSION = '1.93';
+$VERSION = '1.94';
 
 #
 # Global vars
@@ -23,7 +24,7 @@ use vars ('%datasets',		  # master list of dataset id's
 $MAX_FILE_OFFSET = 8192; # default blind scan depth
 
 # Debug off for production use
-my $debugMode = 1;
+my $debugMode = 0;
 my $error;
 	  
 #####################################
@@ -128,24 +129,32 @@ my $error;
 #
 sub new
 {
-	my ($pkg, $filename, $force) = @_;
+	my ($pkg, $file, $force) = @_;
+
+	my $input_is_handle = eval {$file->isa('IO::Handle')};
+	if ($input_is_handle and not $file->isa('IO::Seekable')) {
+		$error = "Handle must be seekable."; Log($error);
+		return undef;
+	}
 
 	#
 	# Open file and snarf data from it.
 	#
-	unless(open(FILE, $filename))
+	my $handle = $input_is_handle ? $file : IO::File->new($file);
+	unless($handle)
 	{
 		$error = "Can't open file: $!"; Log($error);
 		return undef;
 	}
 
-	binmode(FILE);
+	binmode($handle);
 
-	my $datafound = ScanToFirstIMMTag();
+	my $datafound = ScanToFirstIMMTag($handle);
 	unless ($datafound || defined($force))
 	{
 		$error = "No IPTC data found."; Log($error);
-		close(FILE);
+		# don't close unless we opened it
+		$handle->close() unless $input_is_handle;
 		return undef;
 	}
 
@@ -153,13 +162,15 @@ sub new
 	{
 		'_data'		=> {},	# empty hashes; wil be
 		'_listdata'	=> {},	# filled in CollectIIMInfo
-		'_filename' => $filename,
+		'_handle'   => $handle,
 	}, $pkg;
-	
+
+	$self->{_filename} = $file unless $input_is_handle;
+
 	# Do the real snarfing here
-	CollectIIMInfo($self) if $datafound;
+	$self->CollectIIMInfo() if $datafound;
 	
-	close(FILE);
+	$handle->close() unless $input_is_handle;
 		
 	return $self;
 }
@@ -202,29 +213,43 @@ sub SaveAs
 	#
 	# Open file and snarf data from it.
 	#
-	unless(open(FILE, $self->{'_filename'}))
+	my $handle = $self->{_filename} ? IO::File->new($self->{_filename}) : $self->{_handle};
+	unless($handle)
 	{
 		$error = "Can't open file: $!"; Log($error);
 		return undef;
 	}
 
-	binmode(FILE);
+	$handle->seek(0, 0);
+	binmode($handle);
 
-	unless (FileIsJPEG())
+	unless (FileIsJPEG($handle))
 	{
 		$error = "Source file is not a JPEG; I can only save JPEGs. Sorry.";
 		Log($error);
 		return undef;
 	}
 
-	my $ret = JPEGCollectFileParts($options);
-
-	close(FILE);
+	my $ret = JPEGCollectFileParts($handle, $options);
 
 	if ($ret == 0)
 	{
 		Log("collectfileparts failed");
 		return undef;
+	}
+
+	if ($self->{_filename}) {
+		$handle->close();
+		unless ($handle = IO::File->new($newfile, ">")) {
+			$error = "Can't open output file: $!"; Log($error);
+			return undef;
+		}
+		binmode($handle);
+	} else {
+		unless ($handle->truncate(0)) {
+			$error = "Can't truncate, handle might be read-only"; Log($error);
+			return undef;
+		}
 	}
 
 	my ($start, $end, $adobe) = @$ret;
@@ -234,22 +259,12 @@ sub SaveAs
 		undef $adobe;
 	}
 
-	#
-	# Open dest file and stuff data there
-	#
-	unless(open(FILE, '>' . $newfile))
-	{
-		$error = "Can't open output file: $!"; Log($error);
-		return undef;
-	}
 
-	binmode(FILE);
+	$handle->print($start);
+	$handle->print($self->PhotoshopIIMBlock($adobe, $self->PackedIIMData()));
+	$handle->print($end);
 
-	print FILE $start;
-	print FILE $self->PhotoshopIIMBlock($adobe, $self->PackedIIMData());
-	print FILE $end;
-
-	close(FILE);
+	$handle->close() if $self->{_filename};
 		
 	return 1;
 }
@@ -566,15 +581,17 @@ sub ExportSQL
 #
 sub ScanToFirstIMMTag
 {
-	if (FileIsJPEG())
+	my $handle = shift @_;
+
+	if (FileIsJPEG($handle))
 	{
 		Log("File is JPEG, proceeding with JPEGScan");
-		return JPEGScan();
+		return JPEGScan($handle);
 	}
 	else
 	{
 		Log("File not a JPEG, trying BlindScan");
-		return BlindScan();
+		return BlindScan($handle);
 	}
 }
 
@@ -586,22 +603,24 @@ sub ScanToFirstIMMTag
 #
 sub FileIsJPEG
 {
+	my $handle = shift @_;
+
 	# reset to beginning just in case
-	seek(FILE, 0, 0);
+	$handle->seek(0, 0);
 
 	if ($debugMode)
 	{
 		Log("Opening 16 bytes of file:\n");
 		my $dump;
-		read (FILE, $dump, 16);
+		$handle->read($dump, 16);
 		HexDump($dump);
-		seek(FILE, 0, 0);
+		$handle->seek(0, 0);
 	}
 
 	# check start of file marker
 	my ($ff, $soi);
-	read (FILE, $ff, 1) || goto notjpeg;
-	read (FILE, $soi, 1);
+	$handle->read($ff, 1) || goto notjpeg;
+	$handle->read($soi, 1);
 	
 	goto notjpeg unless (ord($ff) == 0xff && ord($soi) == 0xd8);
 
@@ -610,17 +629,17 @@ sub FileIsJPEG
 	# dinking with image data, so anything following the JPEG tagging
 	# system should work.)
 	my ($app0, $len, $jpeg);
-	read (FILE, $ff, 1);
-	read (FILE, $app0, 1);
+	$handle->read($ff, 1);
+	$handle->read($app0, 1);
 
 	goto notjpeg unless (ord($ff) == 0xff);
 
 	# reset to beginning of file
-	seek(FILE, 0, 0);
+	$handle->seek(0, 0);
 	return 1;
 
   notjpeg:
-	seek(FILE, 0, 0);
+	$handle->seek(0, 0);
 	return 0;
 }
 
@@ -635,10 +654,12 @@ sub FileIsJPEG
 #
 sub JPEGScan
 {
+	my $handle = shift @_;
+
 	# Skip past start of file marker
 	my ($ff, $soi);
-	read (FILE, $ff, 1) || return 0;
-	read (FILE, $soi, 1);
+	$handle->read($ff, 1) || return 0;
+	$handle->read($soi, 1);
 	
 	unless (ord($ff) == 0xff && ord($soi) == 0xd8)
 	{
@@ -648,7 +669,7 @@ sub JPEGScan
 
 	# Scan for the APP13 marker which will contain our IPTC info (I hope).
 
-	my $marker = JPEGNextMarker();
+	my $marker = JPEGNextMarker($handle);
 
 	while (ord($marker) != 0xed)
 	{
@@ -663,16 +684,16 @@ sub JPEGScan
 		{ $error = "Marker scan hit start of image data";
 		  Log($error); return 0; }
 
-		if (JPEGSkipVariable() == 0)
+		if (JPEGSkipVariable($handle) == 0)
 		{ $error = "JPEGSkipVariable failed";
 		  Log($error); return 0; }
 
-		$marker = JPEGNextMarker();
+		$marker = JPEGNextMarker($handle);
 	}
 
 	# If were's here, we must have found the right marker. Now
 	# BlindScan through the data.
-	return BlindScan(JPEGGetVariableLength());
+	return BlindScan($handle, JPEGGetVariableLength($handle));
 }
 
 #
@@ -683,20 +704,22 @@ sub JPEGScan
 #
 sub JPEGNextMarker
 {
+	my $handle = shift @_;
+
 	my $byte;
 
 	# Find 0xff byte. We should already be on it.
-	read (FILE, $byte, 1) || return 0;
+	$handle->read($byte, 1) || return 0;
 	while (ord($byte) != 0xff)
 	{
 		Log("JPEGNextMarker: warning: bogus stuff in JPEG file");
-		read(FILE, $byte, 1) || return 0;
+		$handle->read($byte, 1) || return 0;
 	}
 
 	# Now skip any extra 0xffs, which are valid padding.
 	do
 	{
-		read(FILE, $byte, 1) || return 0;
+		$handle->read($byte, 1) || return 0;
 	} while (ord($byte) == 0xff);
 
 	# $byte should now contain the marker id.
@@ -714,9 +737,11 @@ sub JPEGNextMarker
 #
 sub JPEGGetVariableLength
 {
+	my $handle = shift @_;
+
 	# Get the marker parameter length count
 	my $length;
-	read(FILE, $length, 2) || return 0;
+	$handle->read($length, 2) || return 0;
 		
 	($length) = unpack("n", $length);
 
@@ -742,16 +767,17 @@ sub JPEGGetVariableLength
 #
 sub JPEGSkipVariable
 {
+	my $handle = shift;
 	my $rSave = shift;
 
-	my $length = JPEGGetVariableLength();
+	my $length = JPEGGetVariableLength($handle);
 	return if ($length == 0);
 
 	# Skip remaining bytes
 	my $temp;
 	if (defined($rSave) || $debugMode)
 	{
-		unless (read(FILE, $temp, $length))
+		unless ($handle->read($temp, $length))
 		{
 			Log("JPEGSkipVariable: read failed while skipping var data");
 			return 0;
@@ -763,7 +789,7 @@ sub JPEGSkipVariable
 	else
 	{
 		# Just seek
-		unless(seek(FILE, $length, 1))
+		unless($handle->seek($length, 1))
 		{
 			Log("JPEGSkipVariable: read failed while skipping var data");
 			return 0;
@@ -786,6 +812,7 @@ sub JPEGSkipVariable
 #
 sub BlindScan
 {
+	my $handle = shift;
     my $maxoff = shift() || $MAX_FILE_OFFSET;
     
 	Log("BlindScan: starting scan, max length $maxoff");
@@ -796,7 +823,7 @@ sub BlindScan
 	{
 		my $temp;
 		
-		unless (read(FILE, $temp, 1))
+		unless ($handle->read($temp, 1))
 		{
 			Log("BlindScan: hit EOF while scanning");
 			return 0;
@@ -808,21 +835,21 @@ sub BlindScan
 			# if we found that, look for record 2, dataset 0
 			# (record version number)
 			my ($record, $dataset);
-			read (FILE, $record, 1);
-			read (FILE, $dataset, 1);
+			$handle->read($record, 1);
+			$handle->read($dataset, 1);
 			
 			if (ord($record) == 2)
 			{
 				# found it. seek to start of this tag and return.
 				Log("BlindScan: found IIM start at offset $offset");
-				seek(FILE, -3, 1); # seek rel to current position
+				$handle->seek(-3, 1); # seek rel to current position
 				return $offset;
 			}
 			else
 			{
 				# didn't find it. back up 2 to make up for
 				# those reads above.
-				seek(FILE, -2, 1); # seek rel to current position
+				$handle->seek(-2, 1); # seek rel to current position
 			}
 		}
 		
@@ -843,13 +870,15 @@ sub CollectIIMInfo
 {
 	my $self = shift;
 	
+	my $handle = $self->{_handle};
+	
 	# NOTE: file should already be at the start of the first
 	# IPTC code: record 2, dataset 0.
 	
 	while (1)
 	{
 		my $header;
-		return unless read(FILE, $header, 5);
+		return unless $handle->read($header, 5);
 		
 		($tag, $record, $dataset, $length) = unpack("CCCn", $header);
 
@@ -862,7 +891,7 @@ sub CollectIIMInfo
 		# print "length  : " . $length  . "\n";
 	
 		my $value;
-		read(FILE, $value, $length);
+		$handle->read($value, $length);
 		
 		# try to extract first into _listdata (keywords, categories)
 		# and, if unsuccessful, into _data. Tags which are not in the
@@ -898,6 +927,7 @@ sub CollectIIMInfo
 #
 sub JPEGCollectFileParts
 {
+	my $handle = shift;
 	my ($options) = @_;
 	my ($start, $end, $adobeParts);
 	my $discardAppParts = 0;
@@ -906,12 +936,12 @@ sub JPEGCollectFileParts
 	{ $discardAppParts = 1; }
 
 	# Start at beginning of file
-	seek(FILE, 0, 0);
+	$handle->seek(0, 0);
 
 	# Skip past start of file marker
 	my ($ff, $soi);
-	read (FILE, $ff, 1) || return 0;
-	read (FILE, $soi, 1);
+	$handle->read($ff, 1) || return 0;
+	$handle->read($soi, 1);
 	
 	unless (ord($ff) == 0xff && ord($soi) == 0xd8)
 	{
@@ -926,10 +956,10 @@ sub JPEGCollectFileParts
 
 	# Get first marker in file. This will be APP0 for JFIF or APP1 for
 	# EXIF.
-	my $marker = JPEGNextMarker();
+	my $marker = JPEGNextMarker($handle);
 
 	my $app0data;
-	if (JPEGSkipVariable(\$app0data) == 0)
+	if (JPEGSkipVariable($handle, \$app0data) == 0)
 	{ $error = "JPEGSkipVariable failed";
 	  Log($error); return 0; }
 
@@ -956,7 +986,7 @@ sub JPEGCollectFileParts
 	# Now scan through all markers in file until we hit image data or
 	# IPTC stuff.
 	#
-	$marker = JPEGNextMarker();
+	$marker = JPEGNextMarker($handle);
 
 	while (1)
 	{
@@ -980,7 +1010,7 @@ sub JPEGCollectFileParts
 		}
 
 		my $partdata;
-		if (JPEGSkipVariable(\$partdata) == 0)
+		if (JPEGSkipVariable($handle, \$partdata) == 0)
 		{ $error = "JPEGSkipVariable failed";
 		  Log($error); return 0; }
 
@@ -1005,7 +1035,7 @@ sub JPEGCollectFileParts
 			$start .= $partdata;
 		}
 
-		$marker = JPEGNextMarker();
+		$marker = JPEGNextMarker($handle);
 	}
 
   doneScanning:
@@ -1015,7 +1045,7 @@ sub JPEGCollectFileParts
 	#
 	my $buffer;
 
-	while (read(FILE, $buffer, 16384))
+	while ($handle->read($buffer, 16384))
 	{
 		$end .= $buffer;
 	}
@@ -1259,12 +1289,13 @@ sub HexDump
 sub JPEGDebugScan
 {
 	my $filename = shift;
-	open(FILE, $filename) or die "Can't open $filename: $!";
+	my $handle = IO::File->new($filename);
+	$handle or die "Can't open $filename: $!";
 
 	# Skip past start of file marker
 	my ($ff, $soi);
-	read (FILE, $ff, 1) || return 0;
-	read (FILE, $soi, 1);
+	$handle->read($ff, 1) || return 0;
+	$handle->read($soi, 1);
 	
 	unless (ord($ff) == 0xff && ord($soi) == 0xd8)
 	{
@@ -1274,7 +1305,7 @@ sub JPEGDebugScan
 
 	# scan to 0xDA (start of scan), dumping the markers we see between
 	# here and there.
-	my $marker = JPEGNextMarker();
+	my $marker = JPEGNextMarker($handle);
 
 	while (ord($marker) != 0xda)
 	{
@@ -1284,14 +1315,14 @@ sub JPEGDebugScan
 		if (ord($marker) == 0xd9)
 		{Log("Marker scan hit end of image marker"); goto done; }
 
-		if (JPEGSkipVariable() == 0)
+		if (JPEGSkipVariable($handle) == 0)
 		{ Log("JPEGSkipVariable failed"); return 0; }
 
-		$marker = JPEGNextMarker();
+		$marker = JPEGNextMarker($handle);
 	}
 
 done:
-	close(FILE);
+	$handle->close();
 }
 
 # sucessful package load
