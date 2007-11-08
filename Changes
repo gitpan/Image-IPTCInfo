@@ -76,3 +76,7 @@ Revision history for Image::IPTCInfo.
        (Thanks to Marc Liyanage.)
      - debugMode was accidentally left on in 1.93, turning off.
        (Thanks to Dr. Michael Langner.)
+
+1.95
+     - Fixing distribution file, 1.94 contained some bogus Mac resource
+       fork files.

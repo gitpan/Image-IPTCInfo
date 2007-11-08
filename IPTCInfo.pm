@@ -9,7 +9,7 @@ package Image::IPTCInfo;
 use IO::File;
 
 use vars qw($VERSION);
-$VERSION = '1.94';
+$VERSION = '1.95';
 
 #
 # Global vars
